@@ -128,11 +128,32 @@ def build_lstm_model(input_shape: tuple[int, int],
     return model
 
 
+def compute_class_weights(y_train: np.ndarray, num_classes: int
+                          ) -> dict[int, float]:
+    """
+    Wagi klas odwrotnie proporcjonalne do liczności (balanced), tak jak
+    sklearn: w_c = n_total / (n_klas * n_c). PADS jest niezbalansowany
+    (dużo „Parkinson's", mało „inne"), więc bez tego model zawyża klasę
+    większościową. Klasy nieobecne w train dostają wagę 1.0 (neutralnie).
+    """
+    counts = np.bincount(y_train, minlength=num_classes).astype(np.float64)
+    n_total = counts.sum()
+    weights: dict[int, float] = {}
+    for c in range(num_classes):
+        if counts[c] > 0:
+            weights[c] = n_total / (num_classes * counts[c])
+        else:
+            weights[c] = 1.0
+    return weights
+
+
 def train_model(model: keras.Model,
                 X_train: np.ndarray, y_train: np.ndarray,
                 X_val: np.ndarray, y_val: np.ndarray,
-                epochs: int, batch_size: int) -> keras.callbacks.History:
-    """Trenuje model z early stopping i redukcją LR."""
+                epochs: int, batch_size: int,
+                class_weight: dict[int, float] | None = None
+                ) -> keras.callbacks.History:
+    """Trenuje model z early stopping, redukcją LR i (opcjonalnie) wagami klas."""
     callbacks = [
         keras.callbacks.EarlyStopping(
             monitor="val_loss", patience=8, restore_best_weights=True
@@ -147,6 +168,7 @@ def train_model(model: keras.Model,
         epochs=epochs,
         batch_size=batch_size,
         callbacks=callbacks,
+        class_weight=class_weight,
         verbose=2,
     )
 
@@ -173,6 +195,49 @@ def export_tfjs(model: keras.Model, out_dir: str) -> None:
     os.makedirs(tfjs_dir, exist_ok=True)
     tfjs.converters.save_keras_model(model, tfjs_dir)
     print(f"[train] Model TF.js zapisany -> {tfjs_dir}/model.json")
+
+
+def evaluate_per_class(model: keras.Model,
+                       X_val: np.ndarray, y_val: np.ndarray,
+                       num_classes: int) -> None:
+    """
+    Macierz pomyłek + precision/recall/F1 per klasa na zbiorze walidacyjnym.
+    Przy niezbalansowanych danych to ważniejsze niż sama accuracy — pokazuje,
+    czy model faktycznie wykrywa klasy mniejszościowe. Tylko numpy (bez sklearn).
+    """
+    if len(y_val) == 0:
+        print("[eval] Pusty zbiór walidacyjny — pomijam ewaluację per-klasa.")
+        return
+
+    y_pred = model.predict(X_val, verbose=0).argmax(axis=1)
+    cm = np.zeros((num_classes, num_classes), dtype=np.int64)
+    for t, p in zip(y_val, y_pred):
+        cm[int(t), int(p)] += 1
+
+    print("\n[eval] Macierz pomyłek (wiersze = prawda, kolumny = predykcja):")
+    header = "        " + "".join(f"pred{c:<6}" for c in range(num_classes))
+    print(header)
+    for c in range(num_classes):
+        row = "".join(f"{cm[c, k]:<10}" for k in range(num_classes))
+        print(f"  true{c}  {row}")
+
+    print("\n[eval] Metryki per-klasa:")
+    print("  klasa   precision  recall    f1       support")
+    for c in range(num_classes):
+        tp = cm[c, c]
+        fp = cm[:, c].sum() - tp
+        fn = cm[c, :].sum() - tp
+        support = cm[c, :].sum()
+        precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+        recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+        f1 = (2 * precision * recall / (precision + recall)
+              if (precision + recall) > 0 else 0.0)
+        print(f"  {c:<7} {precision:<10.3f} {recall:<9.3f} {f1:<8.3f} {support}")
+
+    # Balanced accuracy = średni recall po klasach (odporne na niezbalansowanie).
+    recalls = [cm[c, c] / cm[c, :].sum() if cm[c, :].sum() > 0 else 0.0
+               for c in range(num_classes)]
+    print(f"\n[eval] Balanced accuracy (średni recall): {np.mean(recalls):.3f}")
 
 
 def save_artifacts(model: keras.Model, out_dir: str,
@@ -222,6 +287,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--batch-size", type=int, default=32)
     p.add_argument("--val-split", type=float, default=0.2)
     p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--no-class-weights", action="store_true",
+                   help="Wyłącz balansowanie klas (domyślnie włączone).")
     return p.parse_args()
 
 
@@ -232,6 +299,13 @@ def main() -> None:
 
     # 1. Dane
     X, y, subjects = load_dataset(args.data)
+
+    # Odfiltruj okna bez etykiety (y < 0, np. brak patient_*.json w PADS).
+    valid = y >= 0
+    if not valid.all():
+        print(f"[train] Pomijam {int((~valid).sum())} okien bez etykiety (y<0).")
+        X, y, subjects = X[valid], y[valid], subjects[valid]
+
     print(f"[train] Dane: X={X.shape}, y={y.shape}, klasy={np.unique(y)}, "
           f"pacjentów={len(set(subjects))}")
 
@@ -262,18 +336,37 @@ def main() -> None:
     model = build_lstm_model(input_shape, args.num_classes)
     model.summary()
 
-    # 4. Trening
+    # 4. Trening (z balansowaniem klas, chyba że wyłączone)
+    if args.no_class_weights:
+        class_weight = None
+        print("[train] Balansowanie klas: WYŁĄCZONE.")
+    else:
+        class_weight = compute_class_weights(y_train, args.num_classes)
+        print(f"[train] Wagi klas (balanced): "
+              f"{ {c: round(w, 3) for c, w in class_weight.items()} }")
     train_model(model, X_train, y_train, X_val, y_val,
-                epochs=args.epochs, batch_size=args.batch_size)
+                epochs=args.epochs, batch_size=args.batch_size,
+                class_weight=class_weight)
 
-    # 5. Eksport
+    # 5. Ewaluacja per-klasa (ważne przy niezbalansowanych danych)
+    evaluate_per_class(model, X_val, y_val, args.num_classes)
+
+    # 6. Eksport
     data = np.load(args.data, allow_pickle=True)
     channels = list(data["channels"]) if "channels" in data.files else []
     save_artifacts(model, args.out, mean, std, channels)
-    export_tfjs(model, args.out)
-
-    print("\n[train] Gotowe. Skopiuj zawartość models/tfjs_model/ "
-          "do mobile-app/ (publiczny katalog assetów).")
+    try:
+        export_tfjs(model, args.out)
+    except ImportError as exc:
+        print(f"\n[train] Pominięto eksport TF.js: {exc}")
+        print("[train] Model Keras zapisany. Eksport zrób w osobnym venv "
+              "(requirements-tfjs.txt):\n"
+              "  tensorflowjs_converter --input_format=keras "
+              f"{os.path.join(args.out, 'tremor_lstm.keras')} "
+              f"{os.path.join(args.out, 'tfjs_model')}")
+    else:
+        print("\n[train] Gotowe. Skopiuj zawartość models/tfjs_model/ "
+              "do mobile-app/ (publiczny katalog assetów).")
 
 
 if __name__ == "__main__":
