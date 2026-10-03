@@ -1,0 +1,13 @@
+node_modules/
+dist/
+*.local
+.DS_Store
+
+# Capacitor native projects (generowane przez `cap add`)
+android/
+ios/
+
+# Logi
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*

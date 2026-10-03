@@ -1,0 +1,30 @@
+# ===== Python / ml-pipeline =====
+.venv/
+.venv-tfjs/
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# ===== Node / mobile-app =====
+node_modules/
+dist/
+*.local
+
+# Capacitor natywne projekty (generowane)
+mobile-app/android/
+mobile-app/ios/
+
+# ===== Dane (duże / zewnętrzne / wygenerowane) =====
+# Trzymamy strukturę katalogów (.gitkeep), ale nie zawartość.
+ml-pipeline/data/raw/*
+ml-pipeline/data/processed/*
+ml-pipeline/models/
+mobile-app/public/model/*
+!**/.gitkeep
+# Zachowaj README modelu w aplikacji
+!mobile-app/public/model/README.md
+
+# ===== System =====
+.DS_Store
+Thumbs.db
+*.log

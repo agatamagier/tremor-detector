@@ -1,0 +1,14 @@
+# Konwersja wytrenowanego modelu Keras -> TensorFlow.js.
+#
+# Instaluj w OSOBNYM środowisku (nie łącz z rdzeniem — zależności tensorflowjs
+# bywają konfliktowe). Na Windows może być problematyczne (zależność uvloop);
+# jeśli instalacja padnie, alternatywy opisane w README / w czacie.
+#
+#   py -3.11 -m venv .venv-tfjs
+#   source .venv-tfjs/Scripts/activate
+#   pip install -r requirements-tfjs.txt
+#
+# Konwersja:
+#   tensorflowjs_converter --input_format=keras models/tremor_lstm.keras models/tfjs_model
+
+tensorflowjs>=4.17

@@ -1,0 +1,15 @@
+# Pipeline ML — detekcja drżenia parkinsonowskiego (rdzeń)
+# Python 3.11 (TensorFlow nie wspiera 3.13/3.14).
+#
+# Te pakiety wystarczą do: download_pads.py, preprocess.py, train.py
+# (pobranie danych, filtr Butterwortha, okienkowanie, trening LSTM).
+
+numpy>=1.24,<2.0
+pandas>=2.0
+scipy>=1.11
+tensorflow>=2.15,<2.17
+
+# UWAGA: tensorflowjs NIE jest tutaj celowo.
+# Na Windows ciągnie zależność 'uvloop', która nie buduje się na tej platformie
+# i wywala całą instalację. Eksport modelu do TensorFlow.js robimy osobno —
+# patrz requirements-tfjs.txt (dedykowany venv tylko do konwersji).

@@ -1,0 +1,8 @@
+{
+  "appId": "com.research.tremoradaptiveui",
+  "appName": "Tremor Adaptive UI",
+  "webDir": "dist",
+  "server": {
+    "androidScheme": "https"
+  }
+}

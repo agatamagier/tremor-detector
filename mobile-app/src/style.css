@@ -1,0 +1,28 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  /* Zmienne sterowane przez useAdaptiveUI — aktualizowane w runtime
+     na podstawie przewidzianego nasilenia drżenia. */
+  --touch-target: 48px; /* 48dp (bazowy) -> 72dp (silne drżenie) */
+  --touch-gap: 12px; /* odstęp między celami dotykowymi */
+  --font-scale: 1; /* skala czcionki */
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  background: #0f172a;
+  color: #e2e8f0;
+  /* Blokada zaznaczania/przytrzymania — ważne przy drżeniu dłoni. */
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
