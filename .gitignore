@@ -18,11 +18,17 @@ mobile-app/ios/
 # Trzymamy strukturę katalogów (.gitkeep), ale nie zawartość.
 ml-pipeline/data/raw/*
 ml-pipeline/data/processed/*
+ml-pipeline/data/processed_5s/
 ml-pipeline/models/
+# Eksperymentalne katalogi modeli (binaria .keras) — nie wersjonujemy.
+ml-pipeline/models_*/
 mobile-app/public/model/*
 !**/.gitkeep
 # Zachowaj README modelu w aplikacji
 !mobile-app/public/model/README.md
+
+# ===== Metryki narzędzia (lokalne) =====
+.ailoc2-metrics/
 
 # ===== System =====
 .DS_Store

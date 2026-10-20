@@ -10,7 +10,7 @@ Model przewiduje poziom nasilenia drżenia w skali porządkowej, np.:
 (mapowanie można dostosować do etykiet MDS-UPDRS / konkretnej bazy).
 
 Pipeline:
-    1. Wczytanie okien (X) i etykiet (y).
+    1. Wczytanie okien (windows) i etykiet (labels).
     2. Standaryzacja per-kanał (z-score) + split train/val.
     3. Budowa i trening sieci LSTM.
     4. Eksport:
@@ -46,10 +46,10 @@ from tensorflow.keras import layers
 
 def load_dataset(npz_path: str) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
-    Wczytuje okna z pliku .npz i zwraca (X, y, subjects).
+    Wczytuje okna z pliku .npz i zwraca (windows, labels, subjects).
 
-    X: (n_okien, n_probek, n_kanalow) — wprost z preprocess.py.
-    y: (n_okien,) — etykiety klasy (detekcja PD: 0=zdrowy, 1=Parkinson, 2=inne).
+    windows:  (n_okien, n_probek, n_kanalow) — wprost z preprocess.py.
+    labels:   (n_okien,) — etykiety klasy (detekcja PD: 0=zdrowy, 1=Parkinson, 2=inne).
     subjects: (n_okien,) — subject_id dla splitu per-pacjent (lub puste).
 
     Etykiety i subject_id pochodzą z labels.csv (download_pads.py) i są
@@ -57,24 +57,24 @@ def load_dataset(npz_path: str) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     losowe etykiety WYŁĄCZNIE do developerskiego testu szkieletu.
     """
     data = np.load(npz_path, allow_pickle=True)
-    X = data["X"].astype(np.float32)
+    windows = data["X"].astype(np.float32)
 
     if "y" in data.files:
-        y = data["y"].astype(np.int64)
+        labels = data["y"].astype(np.int64)
     else:
         print("[train] UWAGA: brak etykiet 'y' w pliku .npz — generuję losowe "
               "etykiety (placeholder developerski!). Uruchom preprocess.py z --labels.")
         rng = np.random.default_rng(42)
-        y = rng.integers(low=0, high=3, size=X.shape[0]).astype(np.int64)
+        labels = rng.integers(low=0, high=3, size=windows.shape[0]).astype(np.int64)
 
     subjects = (
         data["subjects"].astype(str) if "subjects" in data.files
-        else np.array(["unknown"] * X.shape[0])
+        else np.array(["unknown"] * windows.shape[0])
     )
-    return X, y, subjects
+    return windows, labels, subjects
 
 
-def standardize(X_train: np.ndarray, X_val: np.ndarray
+def standardize(train_windows: np.ndarray, val_windows: np.ndarray
                ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
     Standaryzacja z-score per kanał, dopasowana wyłącznie na zbiorze treningowym
@@ -82,12 +82,12 @@ def standardize(X_train: np.ndarray, X_val: np.ndarray
     aplikacja mobilna musi stosować te same statystyki przed inferencją.
     """
     # Statystyki liczone po wymiarach (okno, czas), osobno dla każdego kanału.
-    mean = X_train.mean(axis=(0, 1), keepdims=True)
-    std = X_train.std(axis=(0, 1), keepdims=True) + 1e-8
+    mean = train_windows.mean(axis=(0, 1), keepdims=True)
+    std = train_windows.std(axis=(0, 1), keepdims=True) + 1e-8
 
-    X_train_n = (X_train - mean) / std
-    X_val_n = (X_val - mean) / std
-    return X_train_n, X_val_n, mean.squeeze(), std.squeeze()
+    train_windows_norm = (train_windows - mean) / std
+    val_windows_norm = (val_windows - mean) / std
+    return train_windows_norm, val_windows_norm, mean.squeeze(), std.squeeze()
 
 
 # ---------------------------------------------------------------------------
@@ -128,7 +128,7 @@ def build_lstm_model(input_shape: tuple[int, int],
     return model
 
 
-def compute_class_weights(y_train: np.ndarray, num_classes: int
+def compute_class_weights(train_labels: np.ndarray, num_classes: int
                           ) -> dict[int, float]:
     """
     Wagi klas odwrotnie proporcjonalne do liczności (balanced), tak jak
@@ -136,20 +136,20 @@ def compute_class_weights(y_train: np.ndarray, num_classes: int
     (dużo „Parkinson's", mało „inne"), więc bez tego model zawyża klasę
     większościową. Klasy nieobecne w train dostają wagę 1.0 (neutralnie).
     """
-    counts = np.bincount(y_train, minlength=num_classes).astype(np.float64)
+    counts = np.bincount(train_labels, minlength=num_classes).astype(np.float64)
     n_total = counts.sum()
     weights: dict[int, float] = {}
-    for c in range(num_classes):
-        if counts[c] > 0:
-            weights[c] = n_total / (num_classes * counts[c])
+    for class_idx in range(num_classes):
+        if counts[class_idx] > 0:
+            weights[class_idx] = n_total / (num_classes * counts[class_idx])
         else:
-            weights[c] = 1.0
+            weights[class_idx] = 1.0
     return weights
 
 
 def train_model(model: keras.Model,
-                X_train: np.ndarray, y_train: np.ndarray,
-                X_val: np.ndarray, y_val: np.ndarray,
+                train_windows: np.ndarray, train_labels: np.ndarray,
+                val_windows: np.ndarray, val_labels: np.ndarray,
                 epochs: int, batch_size: int,
                 class_weight: dict[int, float] | None = None
                 ) -> keras.callbacks.History:
@@ -163,8 +163,8 @@ def train_model(model: keras.Model,
         ),
     ]
     return model.fit(
-        X_train, y_train,
-        validation_data=(X_val, y_val),
+        train_windows, train_labels,
+        validation_data=(val_windows, val_labels),
         epochs=epochs,
         batch_size=batch_size,
         callbacks=callbacks,
@@ -198,46 +198,50 @@ def export_tfjs(model: keras.Model, out_dir: str) -> None:
 
 
 def evaluate_per_class(model: keras.Model,
-                       X_val: np.ndarray, y_val: np.ndarray,
+                       val_windows: np.ndarray, val_labels: np.ndarray,
                        num_classes: int) -> None:
     """
     Macierz pomyłek + precision/recall/F1 per klasa na zbiorze walidacyjnym.
     Przy niezbalansowanych danych to ważniejsze niż sama accuracy — pokazuje,
     czy model faktycznie wykrywa klasy mniejszościowe. Tylko numpy (bez sklearn).
     """
-    if len(y_val) == 0:
+    if len(val_labels) == 0:
         print("[eval] Pusty zbiór walidacyjny — pomijam ewaluację per-klasa.")
         return
 
-    y_pred = model.predict(X_val, verbose=0).argmax(axis=1)
-    cm = np.zeros((num_classes, num_classes), dtype=np.int64)
-    for t, p in zip(y_val, y_pred):
-        cm[int(t), int(p)] += 1
+    predicted_labels = model.predict(val_windows, verbose=0).argmax(axis=1)
+    confusion_matrix = np.zeros((num_classes, num_classes), dtype=np.int64)
+    for true_label, predicted_label in zip(val_labels, predicted_labels):
+        confusion_matrix[int(true_label), int(predicted_label)] += 1
 
     print("\n[eval] Macierz pomyłek (wiersze = prawda, kolumny = predykcja):")
-    header = "        " + "".join(f"pred{c:<6}" for c in range(num_classes))
+    header = "        " + "".join(f"pred{class_idx:<6}" for class_idx in range(num_classes))
     print(header)
-    for c in range(num_classes):
-        row = "".join(f"{cm[c, k]:<10}" for k in range(num_classes))
-        print(f"  true{c}  {row}")
+    for class_idx in range(num_classes):
+        row = "".join(f"{confusion_matrix[class_idx, pred_idx]:<10}"
+                      for pred_idx in range(num_classes))
+        print(f"  true{class_idx}  {row}")
 
     print("\n[eval] Metryki per-klasa:")
     print("  klasa   precision  recall    f1       support")
-    for c in range(num_classes):
-        tp = cm[c, c]
-        fp = cm[:, c].sum() - tp
-        fn = cm[c, :].sum() - tp
-        support = cm[c, :].sum()
-        precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
-        recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+    for class_idx in range(num_classes):
+        true_pos = confusion_matrix[class_idx, class_idx]
+        false_pos = confusion_matrix[:, class_idx].sum() - true_pos
+        false_neg = confusion_matrix[class_idx, :].sum() - true_pos
+        support = confusion_matrix[class_idx, :].sum()
+        precision = true_pos / (true_pos + false_pos) if (true_pos + false_pos) > 0 else 0.0
+        recall = true_pos / (true_pos + false_neg) if (true_pos + false_neg) > 0 else 0.0
         f1 = (2 * precision * recall / (precision + recall)
               if (precision + recall) > 0 else 0.0)
-        print(f"  {c:<7} {precision:<10.3f} {recall:<9.3f} {f1:<8.3f} {support}")
+        print(f"  {class_idx:<7} {precision:<10.3f} {recall:<9.3f} {f1:<8.3f} {support}")
 
     # Balanced accuracy = średni recall po klasach (odporne na niezbalansowanie).
-    recalls = [cm[c, c] / cm[c, :].sum() if cm[c, :].sum() > 0 else 0.0
-               for c in range(num_classes)]
-    print(f"\n[eval] Balanced accuracy (średni recall): {np.mean(recalls):.3f}")
+    per_class_recall = [
+        confusion_matrix[class_idx, class_idx] / confusion_matrix[class_idx, :].sum()
+        if confusion_matrix[class_idx, :].sum() > 0 else 0.0
+        for class_idx in range(num_classes)
+    ]
+    print(f"\n[eval] Balanced accuracy (średni recall): {np.mean(per_class_recall):.3f}")
 
 
 def save_artifacts(model: keras.Model, out_dir: str,
@@ -258,14 +262,14 @@ def save_artifacts(model: keras.Model, out_dir: str,
 
     # Wersja JSON wczytywana wprost przez aplikację mobilną (TF.js).
     norm_json = os.path.join(out_dir, "normalization.json")
-    with open(norm_json, "w", encoding="utf-8") as f:
+    with open(norm_json, "w", encoding="utf-8") as norm_file:
         json.dump(
             {
                 "mean": np.asarray(mean).ravel().tolist(),
                 "std": np.asarray(std).ravel().tolist(),
-                "channels": [str(c) for c in channels],
+                "channels": [str(channel) for channel in channels],
             },
-            f,
+            norm_file,
             ensure_ascii=False,
             indent=2,
         )
@@ -277,19 +281,19 @@ def save_artifacts(model: keras.Model, out_dir: str,
 # ---------------------------------------------------------------------------
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Trening LSTM detekcji drżenia PD.")
-    p.add_argument("--data", default="data/processed/windows.npz",
-                   help="Plik .npz z preprocess.py.")
-    p.add_argument("--out", default="models", help="Folder na artefakty modelu.")
-    p.add_argument("--num-classes", type=int, default=3,
-                   help="Liczba klas (detekcja PD: 0=zdrowy, 1=Parkinson, 2=inne).")
-    p.add_argument("--epochs", type=int, default=50)
-    p.add_argument("--batch-size", type=int, default=32)
-    p.add_argument("--val-split", type=float, default=0.2)
-    p.add_argument("--seed", type=int, default=42)
-    p.add_argument("--no-class-weights", action="store_true",
-                   help="Wyłącz balansowanie klas (domyślnie włączone).")
-    return p.parse_args()
+    parser = argparse.ArgumentParser(description="Trening LSTM detekcji drżenia PD.")
+    parser.add_argument("--data", default="data/processed/windows.npz",
+                        help="Plik .npz z preprocess.py.")
+    parser.add_argument("--out", default="models", help="Folder na artefakty modelu.")
+    parser.add_argument("--num-classes", type=int, default=3,
+                        help="Liczba klas (detekcja PD: 0=zdrowy, 1=Parkinson, 2=inne).")
+    parser.add_argument("--epochs", type=int, default=50)
+    parser.add_argument("--batch-size", type=int, default=32)
+    parser.add_argument("--val-split", type=float, default=0.2)
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--no-class-weights", action="store_true",
+                        help="Wyłącz balansowanie klas (domyślnie włączone).")
+    return parser.parse_args()
 
 
 def main() -> None:
@@ -298,41 +302,42 @@ def main() -> None:
     np.random.seed(args.seed)
 
     # 1. Dane
-    X, y, subjects = load_dataset(args.data)
+    windows, labels, subjects = load_dataset(args.data)
 
-    # Odfiltruj okna bez etykiety (y < 0, np. brak patient_*.json w PADS).
-    valid = y >= 0
-    if not valid.all():
-        print(f"[train] Pomijam {int((~valid).sum())} okien bez etykiety (y<0).")
-        X, y, subjects = X[valid], y[valid], subjects[valid]
+    # Odfiltruj okna bez etykiety (label < 0, np. brak patient_*.json w PADS).
+    valid_mask = labels >= 0
+    if not valid_mask.all():
+        print(f"[train] Pomijam {int((~valid_mask).sum())} okien bez etykiety (label<0).")
+        windows, labels, subjects = (
+            windows[valid_mask], labels[valid_mask], subjects[valid_mask])
 
-    print(f"[train] Dane: X={X.shape}, y={y.shape}, klasy={np.unique(y)}, "
-          f"pacjentów={len(set(subjects))}")
+    print(f"[train] Dane: X={windows.shape}, y={labels.shape}, "
+          f"klasy={np.unique(labels)}, pacjentów={len(set(subjects))}")
 
     # 2. Split train/val PER-PACJENT — okna tego samego pacjenta nie mogą
     #    trafić jednocześnie do train i val (inaczej wyciek i zawyżone wyniki).
     unique_subjects = np.array(sorted(set(subjects.tolist())))
     if len(unique_subjects) > 1:
         rng = np.random.default_rng(args.seed)
-        shuffled = rng.permutation(unique_subjects)
-        n_val_subj = max(1, int(len(shuffled) * args.val_split))
-        val_subjects = set(shuffled[:n_val_subj].tolist())
-        val_mask = np.array([s in val_subjects for s in subjects])
+        shuffled_subjects = rng.permutation(unique_subjects)
+        n_val_subjects = max(1, int(len(shuffled_subjects) * args.val_split))
+        val_subjects = set(shuffled_subjects[:n_val_subjects].tolist())
+        val_mask = np.array([subject in val_subjects for subject in subjects])
         print(f"[train] Split per-pacjent: {len(val_subjects)} pacjentów do val, "
-              f"{len(shuffled) - len(val_subjects)} do train.")
+              f"{len(shuffled_subjects) - len(val_subjects)} do train.")
     else:
         # Brak informacji o pacjentach (np. tryb developerski) — split losowy.
         print("[train] UWAGA: brak subject_id — split losowy po oknach.")
         rng = np.random.default_rng(args.seed)
-        val_mask = rng.random(X.shape[0]) < args.val_split
+        val_mask = rng.random(windows.shape[0]) < args.val_split
 
-    X_train, y_train = X[~val_mask], y[~val_mask]
-    X_val, y_val = X[val_mask], y[val_mask]
+    train_windows, train_labels = windows[~val_mask], labels[~val_mask]
+    val_windows, val_labels = windows[val_mask], labels[val_mask]
 
-    X_train, X_val, mean, std = standardize(X_train, X_val)
+    train_windows, val_windows, mean, std = standardize(train_windows, val_windows)
 
     # 3. Model
-    input_shape = (X.shape[1], X.shape[2])
+    input_shape = (windows.shape[1], windows.shape[2])
     model = build_lstm_model(input_shape, args.num_classes)
     model.summary()
 
@@ -341,15 +346,15 @@ def main() -> None:
         class_weight = None
         print("[train] Balansowanie klas: WYŁĄCZONE.")
     else:
-        class_weight = compute_class_weights(y_train, args.num_classes)
+        class_weight = compute_class_weights(train_labels, args.num_classes)
         print(f"[train] Wagi klas (balanced): "
-              f"{ {c: round(w, 3) for c, w in class_weight.items()} }")
-    train_model(model, X_train, y_train, X_val, y_val,
+              f"{ {class_idx: round(weight, 3) for class_idx, weight in class_weight.items()} }")
+    train_model(model, train_windows, train_labels, val_windows, val_labels,
                 epochs=args.epochs, batch_size=args.batch_size,
                 class_weight=class_weight)
 
     # 5. Ewaluacja per-klasa (ważne przy niezbalansowanych danych)
-    evaluate_per_class(model, X_val, y_val, args.num_classes)
+    evaluate_per_class(model, val_windows, val_labels, args.num_classes)
 
     # 6. Eksport
     data = np.load(args.data, allow_pickle=True)

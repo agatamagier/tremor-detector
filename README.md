@@ -101,22 +101,32 @@ pip install -r requirements.txt      # rdzeń (BEZ tensorflowjs)
 
 ### Pełny workflow
 ```bash
-# 1. Pobierz PADS (wymaga sieci bez firmowego VPN — np. hotspot telefonu)
-python download_pads.py download --root data/raw/pads_dataset
+# 1. Pobierz TYLKO zadania drżenia (Relaxed/RelaxedTask/StretchHold) z PhysioNet.
+#    Wymaga sieci bez firmowego VPN (np. hotspot). Celowany downloader czyta
+#    manifest SHA256SUMS.txt i ściąga wybrane pliki zamiast całego ZIP-a (770 MB).
+#    Wznawialny (skip-if-exists). Opcje: --subjects "1-50", --tasks, --all-tasks.
+python download_pads.py fetch --root data/raw/pads_dataset           # wszyscy pacjenci, zadania drżenia
+#   (alternatywa) cały ZIP:  python download_pads.py download --root data/raw/pads_dataset
 
 # 2. ⚠️ OBOWIĄZKOWO zajrzyj w realną strukturę przed konwersją
+#    (potwierdza klucz diagnozy w patient_*.json i kolejność kanałów w .txt)
 python download_pads.py inspect  --root data/raw/pads_dataset
 
-# 3. Konwersja PADS → nasz CSV + labels.csv
+# 3. Konwersja PADS → nasz CSV + labels.csv (domyślnie tylko zadania drżenia)
 python download_pads.py convert  --root data/raw/pads_dataset --out data/raw/pads_csv
 
 # 4. Filtr 3–12 Hz + okienkowanie (UWAGA: --fs 100, bo PADS próbkuje ~100 Hz!)
 python preprocess.py --input data/raw/pads_csv --output data/processed \
     --fs 100 --labels data/raw/pads_csv/labels.csv
 
-# 5. Trening LSTM (3 klasy) + próba eksportu
+# 5. Trening LSTM (3 klasy, balansowanie klas + metryki per-klasa) + próba eksportu
 python train.py --data data/processed/windows.npz --out models --num-classes 3
 ```
+
+**Dataset PADS (469 pacjentów):** `movement/timeseries/<nr>_<zadanie>_<nadgarstek>.txt`
+(sygnał, zadanie w nazwie pliku), `patients/patient_<nr>.json` (etykieta diagnozy).
+Do detekcji drżenia bierzemy zadania **spoczynkowe/posturalne** (Relaxed, RelaxedTask,
+StretchHold); zadania celowe (DrinkGlas, CrossArms, PointFinger, TouchNose…) pomijamy.
 
 ### Kluczowe parametry sygnału (muszą być spójne offline ↔ mobile)
 - Pasmo drżenia: **3–12 Hz** (bandpass Butterworth).
